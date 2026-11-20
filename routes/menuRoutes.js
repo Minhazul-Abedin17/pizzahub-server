@@ -8,12 +8,49 @@ const router = express.Router();
 router.get("/", async (req, res) => {
   const db = req.app.locals.db;
 
+  const { search, category, location, sort } = req.query;
+
+  const filter = {
+    status: "approved",
+    isActive: true,
+  };
+
+  if (search) {
+    filter.name = { $regex: search, $options: "i" };
+  }
+
+  if (category && category !== "All") {
+    filter.category = category;
+  }
+
+  if (location) {
+    filter.location = { $regex: location, $options: "i" };
+  }
+
+  let sortOption = {};
+
+  if (sort === "low-to-high") {
+    sortOption = { price: 1 };
+  } else if (sort === "high-to-low") {
+    sortOption = { price: -1 };
+  }
+
   const result = await db.collection("menuItems")
-    .find({
-      status: "approved",
-      isActive: true
-    })
+    .find(filter)
+    .sort(sortOption)
     .toArray();
+
+  res.json(result);
+});
+
+// Get menu categories
+router.get("/categories", async (req, res) => {
+  const db = req.app.locals.db;
+
+  const result = await db.collection("menuItems").distinct("category", {
+    status: "approved",
+    isActive: true,
+  });
 
   res.json(result);
 });
@@ -26,7 +63,7 @@ router.get("/featured", async (req, res) => {
     .find({
       status: "approved",
       isActive: true,
-      isFeatured: true
+      isFeatured: true,
     })
     .limit(6)
     .toArray();
@@ -46,7 +83,7 @@ router.get("/:id", async (req, res) => {
   const result = await db.collection("menuItems").findOne({
     _id: new ObjectId(id),
     status: "approved",
-    isActive: true
+    isActive: true,
   });
 
   res.json(result);
