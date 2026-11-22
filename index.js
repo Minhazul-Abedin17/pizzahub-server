@@ -1935,3 +1935,5 @@ app.get(
 app.listen(PORT, () => {
   console.log(`PizzaHub server is running at ${PORT}`);
 });
+
+export default app
