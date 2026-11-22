@@ -1,3 +1,4 @@
+
 import express from "express";
 import { MongoClient, ObjectId } from "mongodb";
 import "dotenv/config";
@@ -8,6 +9,7 @@ import { createRemoteJWKSet, jwtVerify } from "jose";
 const app = express();
 const PORT = process.env.PORT || 8000;
 const CLIENT_URL = process.env.CLIENT_URL;
+
 const client = new MongoClient(process.env.MONGODB_URI);
 await client.connect();
 
@@ -31,7 +33,9 @@ app.use(
 );
 
 // Better Auth JWT
-const JWKS = createRemoteJWKSet(new URL(`${CLIENT_URL}/api/auth/jwks`));
+const JWKS = createRemoteJWKSet(
+  new URL(`${CLIENT_URL}/api/auth/jwks`),
+);
 
 // --------------------------------------------------
 // STRIPE WEBHOOK
@@ -57,7 +61,11 @@ app.post(
         process.env.STRIPE_WEBHOOK_SECRET,
       );
     } catch (error) {
-      console.error("Stripe webhook verification failed:", error.message);
+      console.error(
+        "Stripe webhook verification failed:",
+        error.message,
+      );
+
       return res.status(400).send("Invalid webhook signature");
     }
 
@@ -65,7 +73,10 @@ app.post(
       if (event.type === "checkout.session.completed") {
         const session = event.data.object;
 
-        if (session.mode === "subscription" && session.metadata?.vendorEmail) {
+        if (
+          session.mode === "subscription" &&
+          session.metadata?.vendorEmail
+        ) {
           const subscriptionId = session.subscription;
 
           await usersCollection.updateOne(
@@ -122,9 +133,10 @@ app.post(
           });
 
           if (user) {
-            const alreadyExists = await transactionsCollection.findOne({
-              stripeEventId: event.id,
-            });
+            const alreadyExists =
+              await transactionsCollection.findOne({
+                stripeEventId: event.id,
+              });
 
             if (!alreadyExists) {
               await transactionsCollection.insertOne({
@@ -146,6 +158,7 @@ app.post(
       res.json({ received: true });
     } catch (error) {
       console.error("Webhook processing error:", error);
+
       res.status(500).send("Webhook processing failed");
     }
   },
@@ -180,9 +193,6 @@ const verifyToken = async (req, res, next) => {
       });
     }
 
-    // Get current user from database.
-    // This makes blocking and role changes effective
-    // without depending only on an old JWT.
     const dbUser = await usersCollection.findOne({
       email: payload.email,
     });
@@ -193,7 +203,10 @@ const verifyToken = async (req, res, next) => {
       });
     }
 
-    if (dbUser.isBlocked === true || dbUser.status === "blocked") {
+    if (
+      dbUser.isBlocked === true ||
+      dbUser.status === "blocked"
+    ) {
       return res.status(403).json({
         message: "Your account has been blocked",
       });
@@ -208,7 +221,10 @@ const verifyToken = async (req, res, next) => {
 
     next();
   } catch (error) {
-    console.error("Token verification failed:", error.message);
+    console.error(
+      "Token verification failed:",
+      error.message,
+    );
 
     return res.status(401).json({
       message: "Invalid or expired token",
@@ -232,8 +248,11 @@ const verifyRole = (...roles) => {
 // HELPERS
 // --------------------------------------------------
 
-const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const escapeRegex = (value) =>
+  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+
 const validObjectId = (id) => ObjectId.isValid(id);
+
 const getUserIdFilter = (id) => {
   const conditions = [{ _id: id }, { id }];
 
@@ -288,17 +307,36 @@ app.get(
   verifyToken,
   verifyRole("customer"),
   (req, res) => {
-    res.json({ message: "Customer access successful", user: req.user });
+    res.json({
+      message: "Customer access successful",
+      user: req.user,
+    });
   },
 );
 
-app.get("/api/vendor-test", verifyToken, verifyRole("vendor"), (req, res) => {
-  res.json({ message: "Vendor access successful", user: req.user });
-});
+app.get(
+  "/api/vendor-test",
+  verifyToken,
+  verifyRole("vendor"),
+  (req, res) => {
+    res.json({
+      message: "Vendor access successful",
+      user: req.user,
+    });
+  },
+);
 
-app.get("/api/admin-test", verifyToken, verifyRole("admin"), (req, res) => {
-  res.json({ message: "Admin access successful", user: req.user });
-});
+app.get(
+  "/api/admin-test",
+  verifyToken,
+  verifyRole("admin"),
+  (req, res) => {
+    res.json({
+      message: "Admin access successful",
+      user: req.user,
+    });
+  },
+);
 
 // --------------------------------------------------
 // PUBLIC MENU API
@@ -340,12 +378,18 @@ app.get("/api/menu-items", async (req, res) => {
       sortOption = { price: -1 };
     }
 
-    const result = await menuCollection.find(filter).sort(sortOption).toArray();
+    const result = await menuCollection
+      .find(filter)
+      .sort(sortOption)
+      .toArray();
 
     res.json(result);
   } catch (error) {
     console.error("Get menu error:", error);
-    res.status(500).json({ message: "Failed to load menu items" });
+
+    res.status(500).json({
+      message: "Failed to load menu items",
+    });
   }
 });
 
@@ -359,7 +403,9 @@ app.get("/api/menu-items/categories", async (req, res) => {
 
     res.json(result);
   } catch (error) {
-    res.status(500).json({ message: "Failed to load categories" });
+    res.status(500).json({
+      message: "Failed to load categories",
+    });
   }
 });
 
@@ -377,7 +423,9 @@ app.get("/api/menu-items/featured", async (req, res) => {
 
     res.json(result);
   } catch (error) {
-    res.status(500).json({ message: "Failed to load featured pizzas" });
+    res.status(500).json({
+      message: "Failed to load featured pizzas",
+    });
   }
 });
 
@@ -399,7 +447,9 @@ app.get(
 
       res.json(result);
     } catch (error) {
-      res.status(500).json({ message: "Failed to load your pizzas" });
+      res.status(500).json({
+        message: "Failed to load your pizzas",
+      });
     }
   },
 );
@@ -414,7 +464,9 @@ app.get(
       const { id } = req.params;
 
       if (!validObjectId(id)) {
-        return res.status(400).json({ message: "Invalid pizza ID" });
+        return res.status(400).json({
+          message: "Invalid pizza ID",
+        });
       }
 
       const result = await menuCollection.findOne({
@@ -423,12 +475,16 @@ app.get(
       });
 
       if (!result) {
-        return res.status(404).json({ message: "Pizza not found" });
+        return res.status(404).json({
+          message: "Pizza not found",
+        });
       }
 
       res.json(result);
     } catch (error) {
-      res.status(500).json({ message: "Failed to load pizza details" });
+      res.status(500).json({
+        message: "Failed to load pizza details",
+      });
     }
   },
 );
@@ -439,7 +495,9 @@ app.get("/api/menu-items/:id", async (req, res) => {
     const { id } = req.params;
 
     if (!validObjectId(id)) {
-      return res.status(400).json({ message: "Invalid pizza ID" });
+      return res.status(400).json({
+        message: "Invalid pizza ID",
+      });
     }
 
     const result = await menuCollection.findOne({
@@ -449,14 +507,19 @@ app.get("/api/menu-items/:id", async (req, res) => {
     });
 
     if (!result) {
-      return res.status(404).json({ message: "Pizza not found" });
+      return res.status(404).json({
+        message: "Pizza not found",
+      });
     }
 
     res.json(result);
   } catch (error) {
-    res.status(500).json({ message: "Failed to load pizza" });
+    res.status(500).json({
+      message: "Failed to load pizza",
+    });
   }
 });
+
 // Add pizza
 app.post(
   "/api/menu-items",
@@ -464,10 +527,24 @@ app.post(
   verifyRole("vendor"),
   async (req, res) => {
     try {
-      const { name, description, price, image, category, location } = req.body;
+      const {
+        name,
+        description,
+        price,
+        image,
+        category,
+        location,
+      } = req.body;
 
-      const validFields = [name, description, image, category, location].every(
-        (value) => typeof value === "string" && value.trim(),
+      const validFields = [
+        name,
+        description,
+        image,
+        category,
+        location,
+      ].every(
+        (value) =>
+          typeof value === "string" && value.trim(),
       );
 
       let validImage = false;
@@ -493,8 +570,10 @@ app.post(
 
       const plan = await getVendorPlan(req.user.email);
 
+      // Count only approved and active pizzas
       const activeItems = await menuCollection.countDocuments({
         vendorId: req.user.id,
+        status: "approved",
         isActive: true,
       });
 
@@ -531,7 +610,10 @@ app.post(
       });
     } catch (error) {
       console.error("Add pizza error:", error);
-      res.status(500).json({ message: "Failed to add pizza" });
+
+      res.status(500).json({
+        message: "Failed to add pizza",
+      });
     }
   },
 );
@@ -546,13 +628,29 @@ app.patch(
       const { id } = req.params;
 
       if (!validObjectId(id)) {
-        return res.status(400).json({ message: "Invalid pizza ID" });
+        return res.status(400).json({
+          message: "Invalid pizza ID",
+        });
       }
 
-      const { name, description, price, image, category, location } = req.body;
+      const {
+        name,
+        description,
+        price,
+        image,
+        category,
+        location,
+      } = req.body;
 
-      const validFields = [name, description, image, category, location].every(
-        (value) => typeof value === "string" && value.trim(),
+      const validFields = [
+        name,
+        description,
+        image,
+        category,
+        location,
+      ].every(
+        (value) =>
+          typeof value === "string" && value.trim(),
       );
 
       let validImage = false;
@@ -596,7 +694,9 @@ app.patch(
       );
 
       if (!result.matchedCount) {
-        return res.status(404).json({ message: "Pizza not found" });
+        return res.status(404).json({
+          message: "Pizza not found",
+        });
       }
 
       res.json({
@@ -605,13 +705,15 @@ app.patch(
       });
     } catch (error) {
       console.error("Update pizza error:", error);
-      res.status(500).json({ message: "Failed to update pizza" });
+
+      res.status(500).json({
+        message: "Failed to update pizza",
+      });
     }
   },
 );
 
 // Vendor: Delete own pizza
-
 app.delete(
   "/api/menu-items/:id",
   verifyToken,
@@ -621,7 +723,9 @@ app.delete(
       const { id } = req.params;
 
       if (!validObjectId(id)) {
-        return res.status(400).json({ message: "Invalid pizza ID" });
+        return res.status(400).json({
+          message: "Invalid pizza ID",
+        });
       }
 
       const result = await menuCollection.deleteOne({
@@ -630,7 +734,9 @@ app.delete(
       });
 
       if (result.deletedCount === 0) {
-        return res.status(404).json({ message: "Pizza not found" });
+        return res.status(404).json({
+          message: "Pizza not found",
+        });
       }
 
       res.json({
@@ -639,13 +745,15 @@ app.delete(
       });
     } catch (error) {
       console.error("Delete pizza error:", error);
-      res.status(500).json({ message: "Failed to delete pizza" });
+
+      res.status(500).json({
+        message: "Failed to delete pizza",
+      });
     }
   },
 );
 
 // Vendor: Update own pizza availability
-
 app.patch(
   "/api/menu-items/:id/active",
   verifyToken,
@@ -655,8 +763,13 @@ app.patch(
       const { id } = req.params;
       const { isActive } = req.body;
 
-      if (!validObjectId(id) || typeof isActive !== "boolean") {
-        return res.status(400).json({ message: "Invalid request" });
+      if (
+        !validObjectId(id) ||
+        typeof isActive !== "boolean"
+      ) {
+        return res.status(400).json({
+          message: "Invalid request",
+        });
       }
 
       const filter = {
@@ -667,7 +780,9 @@ app.patch(
       const item = await menuCollection.findOne(filter);
 
       if (!item) {
-        return res.status(404).json({ message: "Pizza not found" });
+        return res.status(404).json({
+          message: "Pizza not found",
+        });
       }
 
       if (isActive && item.status !== "approved") {
@@ -679,8 +794,10 @@ app.patch(
       if (isActive) {
         const plan = await getVendorPlan(req.user.email);
 
+        // Count only approved and active pizzas
         const activeItems = await menuCollection.countDocuments({
           vendorId: req.user.id,
+          status: "approved",
           isActive: true,
         });
 
@@ -704,13 +821,18 @@ app.patch(
         message: `Pizza ${isActive ? "activated" : "deactivated"} successfully`,
       });
     } catch (error) {
-      console.error("Update pizza availability error:", error);
+      console.error(
+        "Update pizza availability error:",
+        error,
+      );
+
       res.status(500).json({
         message: "Failed to update pizza availability",
       });
     }
   },
 );
+
 // --------------------------------------------------
 // CUSTOMER ORDER API
 // --------------------------------------------------
@@ -744,12 +866,39 @@ app.post(
         });
       }
 
-      const date = new Date(deliveryDate);
+      // Validate date using Bangladesh/local calendar date
+      const dateParts = deliveryDate.split("-").map(Number);
 
-      if (
-        Number.isNaN(date.getTime()) ||
-        date < new Date(new Date().setHours(0, 0, 0, 0))
-      ) {
+      const isValidDate =
+        /^\d{4}-\d{2}-\d{2}$/.test(deliveryDate) &&
+        dateParts.length === 3 &&
+        dateParts.every(Number.isInteger);
+
+      const date = isValidDate
+        ? new Date(
+            Date.UTC(
+              dateParts[0],
+              dateParts[1] - 1,
+              dateParts[2],
+            ),
+          )
+        : new Date(NaN);
+
+      const validCalendarDate =
+        !Number.isNaN(date.getTime()) &&
+        date.getUTCFullYear() === dateParts[0] &&
+        date.getUTCMonth() === dateParts[1] - 1 &&
+        date.getUTCDate() === dateParts[2];
+
+      const today = new Date();
+
+      const todayString = [
+        today.getFullYear(),
+        String(today.getMonth() + 1).padStart(2, "0"),
+        String(today.getDate()).padStart(2, "0"),
+      ].join("-");
+
+      if (!validCalendarDate || deliveryDate < todayString) {
         return res.status(400).json({
           message: "Please select a valid future delivery date",
         });
@@ -773,14 +922,24 @@ app.post(
         });
       }
 
+      // Check duplicate order for the same UTC calendar date
+      const startOfDay = new Date(
+        `${deliveryDate}T00:00:00.000Z`,
+      );
+
+      const endOfDay = new Date(startOfDay);
+      endOfDay.setUTCDate(endOfDay.getUTCDate() + 1);
+
       const existingOrder = await ordersCollection.findOne({
         customerId: req.user.id,
         menuItemId,
         deliveryDate: {
-          $gte: new Date(date.setHours(0, 0, 0, 0)),
-          $lt: new Date(date.setHours(23, 59, 59, 999)),
+          $gte: startOfDay,
+          $lt: endOfDay,
         },
-        status: { $in: ["pending", "accepted"] },
+        status: {
+          $in: ["pending", "accepted"],
+        },
       });
 
       if (existingOrder) {
@@ -804,16 +963,29 @@ app.post(
         customerEmail: req.user.email,
         customerName: req.user.name,
         vendorEmail: "",
-        deliveryDate: new Date(deliveryDate),
+        deliveryDate: date,
         deliveryAddress: deliveryAddress.trim(),
-        message: typeof message === "string" ? message.trim() : "",
+        message:
+          typeof message === "string" ? message.trim() : "",
         status: "pending",
         createdAt: new Date(),
         updatedAt: new Date(),
       };
 
+      // Find vendor using string ID or ObjectId
+      const vendorConditions = [
+        { _id: item.vendorId },
+        { id: item.vendorId },
+      ];
+
+      if (validObjectId(item.vendorId)) {
+        vendorConditions.push({
+          _id: new ObjectId(item.vendorId),
+        });
+      }
+
       const vendor = await usersCollection.findOne({
-        $or: [{ _id: item.vendorId }, { id: item.vendorId }],
+        $or: vendorConditions,
       });
 
       order.vendorEmail = vendor?.email || "";
@@ -830,7 +1002,10 @@ app.post(
       });
     } catch (error) {
       console.error("Create order error:", error);
-      res.status(500).json({ message: "Failed to create order" });
+
+      res.status(500).json({
+        message: "Failed to create order",
+      });
     }
   },
 );
@@ -849,7 +1024,9 @@ app.get(
 
       res.json(result);
     } catch (error) {
-      res.status(500).json({ message: "Failed to load your orders" });
+      res.status(500).json({
+        message: "Failed to load your orders",
+      });
     }
   },
 );
@@ -864,7 +1041,9 @@ app.get(
       const { id } = req.params;
 
       if (!validObjectId(id)) {
-        return res.status(400).json({ message: "Invalid order ID" });
+        return res.status(400).json({
+          message: "Invalid order ID",
+        });
       }
 
       const order = await ordersCollection.findOne({
@@ -873,12 +1052,16 @@ app.get(
       });
 
       if (!order) {
-        return res.status(404).json({ message: "Order not found" });
+        return res.status(404).json({
+          message: "Order not found",
+        });
       }
 
       res.json(order);
     } catch (error) {
-      res.status(500).json({ message: "Failed to load order details" });
+      res.status(500).json({
+        message: "Failed to load order details",
+      });
     }
   },
 );
@@ -893,7 +1076,9 @@ app.patch(
       const { id } = req.params;
 
       if (!validObjectId(id)) {
-        return res.status(400).json({ message: "Invalid order ID" });
+        return res.status(400).json({
+          message: "Invalid order ID",
+        });
       }
 
       const result = await ordersCollection.updateOne(
@@ -921,7 +1106,9 @@ app.patch(
         message: "Order cancelled successfully",
       });
     } catch (error) {
-      res.status(500).json({ message: "Failed to cancel order" });
+      res.status(500).json({
+        message: "Failed to cancel order",
+      });
     }
   },
 );
@@ -944,7 +1131,9 @@ app.get(
 
       res.json(result);
     } catch (error) {
-      res.status(500).json({ message: "Failed to load vendor orders" });
+      res.status(500).json({
+        message: "Failed to load vendor orders",
+      });
     }
   },
 );
@@ -960,11 +1149,15 @@ app.patch(
       const { status } = req.body;
 
       if (!validObjectId(id)) {
-        return res.status(400).json({ message: "Invalid order ID" });
+        return res.status(400).json({
+          message: "Invalid order ID",
+        });
       }
 
       if (!["accepted", "rejected", "delivered"].includes(status)) {
-        return res.status(400).json({ message: "Invalid order status" });
+        return res.status(400).json({
+          message: "Invalid order status",
+        });
       }
 
       const filter = {
@@ -975,7 +1168,9 @@ app.patch(
       const order = await ordersCollection.findOne(filter);
 
       if (!order) {
-        return res.status(404).json({ message: "Order not found" });
+        return res.status(404).json({
+          message: "Order not found",
+        });
       }
 
       if (
@@ -987,13 +1182,19 @@ app.patch(
         });
       }
 
-      if (order.status === "accepted" && status !== "delivered") {
+      if (
+        order.status === "accepted" &&
+        status !== "delivered"
+      ) {
         return res.status(400).json({
           message: "Accepted orders can only be marked as delivered",
         });
       }
 
-      if (order.status !== "pending" && order.status !== "accepted") {
+      if (
+        order.status !== "pending" &&
+        order.status !== "accepted"
+      ) {
         return res.status(400).json({
           message: "This order can no longer be updated",
         });
@@ -1011,7 +1212,9 @@ app.patch(
         message: `Order ${status} successfully`,
       });
     } catch (error) {
-      res.status(500).json({ message: "Failed to update order" });
+      res.status(500).json({
+        message: "Failed to update order",
+      });
     }
   },
 );
@@ -1036,7 +1239,8 @@ app.get(
       res.json({
         plan,
         status: user?.subscriptionStatus || "inactive",
-        subscriptionUpdatedAt: user?.subscriptionUpdatedAt || null,
+        subscriptionUpdatedAt:
+          user?.subscriptionUpdatedAt || null,
       });
     } catch (error) {
       res.status(500).json({
@@ -1069,9 +1273,11 @@ app.post(
 
       if (plan === "premium") {
         return res.status(400).json({
-          message: "You already have an active Premium subscription",
+          message:
+            "You already have an active Premium subscription",
         });
       }
+
       const session = await stripe.checkout.sessions.create({
         mode: "subscription",
         customer_email: req.user.email,
@@ -1101,6 +1307,7 @@ app.post(
       });
     } catch (error) {
       console.error("Stripe checkout error:", error);
+
       res.status(500).json({
         message: "Unable to start subscription checkout",
       });
@@ -1136,7 +1343,10 @@ app.get(
         usersCollection.countDocuments({ role: "customer" }),
         usersCollection.countDocuments({ role: "vendor" }),
         usersCollection.countDocuments({
-          $or: [{ isBlocked: true }, { status: "blocked" }],
+          $or: [
+            { isBlocked: true },
+            { status: "blocked" },
+          ],
         }),
         menuCollection.countDocuments({}),
         menuCollection.countDocuments({ status: "pending" }),
@@ -1162,6 +1372,7 @@ app.get(
       });
     } catch (error) {
       console.error("Admin dashboard error:", error);
+
       res.status(500).json({
         message: "Failed to load admin dashboard",
       });
@@ -1169,8 +1380,7 @@ app.get(
   },
 );
 
-//2. Admin: Get all users with search and filters
-
+// 2. Admin: Get all users with search and filters
 app.get(
   "/api/admin/users",
   verifyToken,
@@ -1196,13 +1406,19 @@ app.get(
         };
 
         conditions.push({
-          $or: [{ name: regex }, { email: regex }],
+          $or: [
+            { name: regex },
+            { email: regex },
+          ],
         });
       }
 
       if (status === "blocked") {
         conditions.push({
-          $or: [{ isBlocked: true }, { status: "blocked" }],
+          $or: [
+            { isBlocked: true },
+            { status: "blocked" },
+          ],
         });
       }
 
@@ -1238,6 +1454,7 @@ app.get(
       res.json(result);
     } catch (error) {
       console.error("Admin users error:", error);
+
       res.status(500).json({
         message: "Failed to load users",
       });
@@ -1280,6 +1497,7 @@ app.get(
       res.json(user);
     } catch (error) {
       console.error("Admin user details error:", error);
+
       res.status(500).json({
         message: "Failed to load user details",
       });
@@ -1337,6 +1555,7 @@ app.patch(
       });
     } catch (error) {
       console.error("Admin block user error:", error);
+
       res.status(500).json({
         message: "Failed to update user status",
       });
@@ -1376,6 +1595,7 @@ app.get(
       res.json(result);
     } catch (error) {
       console.error("Admin menu items error:", error);
+
       res.status(500).json({
         message: "Failed to load menu items",
       });
@@ -1410,7 +1630,6 @@ app.patch(
         updatedAt: new Date(),
       };
 
-      // Rejected items must not remain active
       if (status === "rejected") {
         updateFields.isActive = false;
       }
@@ -1432,6 +1651,7 @@ app.patch(
       });
     } catch (error) {
       console.error("Admin menu status error:", error);
+
       res.status(500).json({
         message: "Failed to update pizza status",
       });
@@ -1473,7 +1693,8 @@ app.patch(
 
       if (item.status !== "approved") {
         return res.status(400).json({
-          message: "Only approved pizzas can be activated or deactivated",
+          message:
+            "Only approved pizzas can be activated or deactivated",
         });
       }
 
@@ -1495,6 +1716,7 @@ app.patch(
       });
     } catch (error) {
       console.error("Admin menu active error:", error);
+
       res.status(500).json({
         message: "Failed to update pizza availability",
       });
@@ -1533,6 +1755,7 @@ app.delete(
       });
     } catch (error) {
       console.error("Admin delete menu error:", error);
+
       res.status(500).json({
         message: "Failed to delete pizza",
       });
@@ -1555,6 +1778,7 @@ app.get(
       res.json(result);
     } catch (error) {
       console.error("Admin orders error:", error);
+
       res.status(500).json({
         message: "Failed to load orders",
       });
@@ -1574,31 +1798,31 @@ app.get(
         .sort({ createdAt: -1 })
         .toArray();
 
-      // Get vendor information for transactions
-      const vendors = await usersCollection
-        .find(
-          { role: "vendor" },
-          {
-            projection: {
-              name: 1,
-              email: 1,
-              businessName: 1,
-            },
+      const vendors = await usersCollection.find(
+        { role: "vendor" },
+        {
+          projection: {
+            name: 1,
+            email: 1,
+            businessName: 1,
           },
-        )
-        .toArray();
+        },
+      ).toArray();
 
       const vendorMap = new Map();
 
       vendors.forEach((vendor) => {
         vendorMap.set(String(vendor._id), vendor);
+
         if (vendor.id) {
           vendorMap.set(String(vendor.id), vendor);
         }
       });
 
       const result = transactions.map((transaction) => {
-        const vendor = vendorMap.get(String(transaction.vendorId));
+        const vendor = vendorMap.get(
+          String(transaction.vendorId),
+        );
 
         return {
           ...transaction,
@@ -1607,20 +1831,26 @@ app.get(
             vendor?.businessName ||
             vendor?.name ||
             "Unknown Vendor",
-          vendorEmail: transaction.vendorEmail || vendor?.email || "—",
+          vendorEmail:
+            transaction.vendorEmail ||
+            vendor?.email ||
+            "—",
           type:
             transaction.plan ||
             transaction.type ||
             transaction.subscriptionPlan ||
             "Premium Subscription",
           stripeInvoiceId:
-            transaction.stripeInvoiceId || transaction.stripeSessionId || "",
+            transaction.stripeInvoiceId ||
+            transaction.stripeSessionId ||
+            "",
         };
       });
 
       res.json(result);
     } catch (error) {
       console.error("Admin transactions error:", error);
+
       res.status(500).json({
         message: "Failed to load transactions",
       });
