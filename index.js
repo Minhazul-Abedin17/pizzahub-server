@@ -381,8 +381,6 @@ app.get("/api/menu-items/featured", async (req, res) => {
   }
 });
 
-
-
 // --------------------------------------------------
 // VENDOR MENU API
 // --------------------------------------------------
@@ -643,7 +641,7 @@ app.delete(
       console.error("Delete pizza error:", error);
       res.status(500).json({ message: "Failed to delete pizza" });
     }
-  }
+  },
 );
 
 // Vendor: Update own pizza availability
@@ -688,7 +686,8 @@ app.patch(
 
         if (plan === "free" && activeItems >= 3 && !item.isActive) {
           return res.status(403).json({
-            message: "Free plan allows only 3 active pizzas. Upgrade to Premium for unlimited listings.",
+            message:
+              "Free plan allows only 3 active pizzas. Upgrade to Premium for unlimited listings.",
           });
         }
       }
@@ -710,7 +709,7 @@ app.patch(
         message: "Failed to update pizza availability",
       });
     }
-  }
+  },
 );
 // --------------------------------------------------
 // CUSTOMER ORDER API
@@ -1113,7 +1112,7 @@ app.post(
 // ADMIN API
 // --------------------------------------------------
 
-// Admin dashboard statistics
+// 1. Admin Dashboard Statistics
 app.get(
   "/api/admin/dashboard",
   verifyToken,
@@ -1170,7 +1169,8 @@ app.get(
   },
 );
 
-// Admin: Get users
+//2. Admin: Get all users with search and filters
+
 app.get(
   "/api/admin/users",
   verifyToken,
@@ -1180,8 +1180,12 @@ app.get(
       const { search, role, status } = req.query;
 
       const filter = {};
+      const conditions = [];
 
-      if (typeof role === "string" && role !== "all") {
+      if (
+        typeof role === "string" &&
+        ["customer", "vendor", "admin"].includes(role)
+      ) {
         filter.role = role;
       }
 
@@ -1191,18 +1195,26 @@ app.get(
           $options: "i",
         };
 
-        filter.$or = [{ name: regex }, { email: regex }];
+        conditions.push({
+          $or: [{ name: regex }, { email: regex }],
+        });
       }
 
       if (status === "blocked") {
-        filter.$or = [
-          ...(filter.$or || []),
-          { isBlocked: true },
-          { status: "blocked" },
-        ];
-      } else if (status === "active") {
-        filter.isBlocked = { $ne: true };
-        filter.status = { $ne: "blocked" };
+        conditions.push({
+          $or: [{ isBlocked: true }, { status: "blocked" }],
+        });
+      }
+
+      if (status === "active") {
+        conditions.push({
+          isBlocked: { $ne: true },
+          status: { $ne: "blocked" },
+        });
+      }
+
+      if (conditions.length > 0) {
+        filter.$and = conditions;
       }
 
       const result = await usersCollection
@@ -1215,6 +1227,9 @@ app.get(
             isBlocked: 1,
             status: 1,
             createdAt: 1,
+            businessName: 1,
+            subscriptionPlan: 1,
+            subscriptionExpiresAt: 1,
           },
         })
         .sort({ createdAt: -1 })
@@ -1222,19 +1237,63 @@ app.get(
 
       res.json(result);
     } catch (error) {
-      res.status(500).json({ message: "Failed to load users" });
+      console.error("Admin users error:", error);
+      res.status(500).json({
+        message: "Failed to load users",
+      });
     }
   },
 );
 
-// Admin: Block or unblock user
+// 3. Admin: Get single user details
+app.get(
+  "/api/admin/users/:id",
+  verifyToken,
+  verifyRole("admin"),
+  async (req, res) => {
+    try {
+      const user = await usersCollection.findOne(
+        getUserIdFilter(req.params.id),
+        {
+          projection: {
+            name: 1,
+            email: 1,
+            role: 1,
+            image: 1,
+            isBlocked: 1,
+            status: 1,
+            createdAt: 1,
+            updatedAt: 1,
+            businessName: 1,
+            subscriptionPlan: 1,
+            subscriptionExpiresAt: 1,
+          },
+        },
+      );
+
+      if (!user) {
+        return res.status(404).json({
+          message: "User not found",
+        });
+      }
+
+      res.json(user);
+    } catch (error) {
+      console.error("Admin user details error:", error);
+      res.status(500).json({
+        message: "Failed to load user details",
+      });
+    }
+  },
+);
+
+// 4. Admin: Block or unblock user
 app.patch(
   "/api/admin/users/:id/status",
   verifyToken,
   verifyRole("admin"),
   async (req, res) => {
     try {
-      const { id } = req.params;
       const { isBlocked } = req.body;
 
       if (typeof isBlocked !== "boolean") {
@@ -1243,20 +1302,24 @@ app.patch(
         });
       }
 
-      const targetUser = await usersCollection.findOne(getUserIdFilter(id));
+      const targetUser = await usersCollection.findOne(
+        getUserIdFilter(req.params.id),
+      );
 
       if (!targetUser) {
-        return res.status(404).json({ message: "User not found" });
+        return res.status(404).json({
+          message: "User not found",
+        });
       }
 
-      if (targetUser.email === req.user.email) {
-        return res.status(400).json({
-          message: "You cannot block your own admin account",
+      if (targetUser.role === "admin") {
+        return res.status(403).json({
+          message: "Admin accounts cannot be blocked",
         });
       }
 
       await usersCollection.updateOne(
-        { email: targetUser.email },
+        { _id: targetUser._id },
         {
           $set: {
             isBlocked,
@@ -1273,12 +1336,15 @@ app.patch(
           : "User unblocked successfully",
       });
     } catch (error) {
-      res.status(500).json({ message: "Failed to update user status" });
+      console.error("Admin block user error:", error);
+      res.status(500).json({
+        message: "Failed to update user status",
+      });
     }
   },
 );
 
-// Admin: Get all menu items
+// 5. Admin: Get all menu items
 app.get(
   "/api/admin/menu-items",
   verifyToken,
@@ -1286,7 +1352,6 @@ app.get(
   async (req, res) => {
     try {
       const { status, search } = req.query;
-
       const filter = {};
 
       if (
@@ -1310,12 +1375,15 @@ app.get(
 
       res.json(result);
     } catch (error) {
-      res.status(500).json({ message: "Failed to load menu items" });
+      console.error("Admin menu items error:", error);
+      res.status(500).json({
+        message: "Failed to load menu items",
+      });
     }
   },
 );
 
-// Admin: Approve or reject menu item
+// 6. Admin: Approve or reject menu item
 app.patch(
   "/api/admin/menu-items/:id/status",
   verifyToken,
@@ -1326,25 +1394,36 @@ app.patch(
       const { status } = req.body;
 
       if (!validObjectId(id)) {
-        return res.status(400).json({ message: "Invalid pizza ID" });
+        return res.status(400).json({
+          message: "Invalid pizza ID",
+        });
       }
 
       if (!["approved", "rejected"].includes(status)) {
-        return res.status(400).json({ message: "Invalid status" });
+        return res.status(400).json({
+          message: "Status must be approved or rejected",
+        });
+      }
+
+      const updateFields = {
+        status,
+        updatedAt: new Date(),
+      };
+
+      // Rejected items must not remain active
+      if (status === "rejected") {
+        updateFields.isActive = false;
       }
 
       const result = await menuCollection.updateOne(
         { _id: new ObjectId(id) },
-        {
-          $set: {
-            status,
-            updatedAt: new Date(),
-          },
-        },
+        { $set: updateFields },
       );
 
       if (!result.matchedCount) {
-        return res.status(404).json({ message: "Pizza not found" });
+        return res.status(404).json({
+          message: "Pizza not found",
+        });
       }
 
       res.json({
@@ -1352,12 +1431,15 @@ app.patch(
         message: `Pizza ${status} successfully`,
       });
     } catch (error) {
-      res.status(500).json({ message: "Failed to update pizza status" });
+      console.error("Admin menu status error:", error);
+      res.status(500).json({
+        message: "Failed to update pizza status",
+      });
     }
   },
 );
 
-// Admin: Activate or deactivate pizza
+// 7. Admin: Activate or deactivate approved pizza
 app.patch(
   "/api/admin/menu-items/:id/active",
   verifyToken,
@@ -1367,11 +1449,35 @@ app.patch(
       const { id } = req.params;
       const { isActive } = req.body;
 
-      if (!validObjectId(id) || typeof isActive !== "boolean") {
-        return res.status(400).json({ message: "Invalid request" });
+      if (!validObjectId(id)) {
+        return res.status(400).json({
+          message: "Invalid pizza ID",
+        });
       }
 
-      const result = await menuCollection.updateOne(
+      if (typeof isActive !== "boolean") {
+        return res.status(400).json({
+          message: "isActive must be true or false",
+        });
+      }
+
+      const item = await menuCollection.findOne({
+        _id: new ObjectId(id),
+      });
+
+      if (!item) {
+        return res.status(404).json({
+          message: "Pizza not found",
+        });
+      }
+
+      if (item.status !== "approved") {
+        return res.status(400).json({
+          message: "Only approved pizzas can be activated or deactivated",
+        });
+      }
+
+      await menuCollection.updateOne(
         { _id: new ObjectId(id) },
         {
           $set: {
@@ -1381,21 +1487,22 @@ app.patch(
         },
       );
 
-      if (!result.matchedCount) {
-        return res.status(404).json({ message: "Pizza not found" });
-      }
-
       res.json({
         success: true,
-        message: "Pizza availability updated",
+        message: isActive
+          ? "Pizza activated successfully"
+          : "Pizza deactivated successfully",
       });
     } catch (error) {
-      res.status(500).json({ message: "Failed to update pizza" });
+      console.error("Admin menu active error:", error);
+      res.status(500).json({
+        message: "Failed to update pizza availability",
+      });
     }
   },
 );
 
-// Admin: Delete menu item
+// 8. Admin: Delete menu item
 app.delete(
   "/api/admin/menu-items/:id",
   verifyToken,
@@ -1405,7 +1512,9 @@ app.delete(
       const { id } = req.params;
 
       if (!validObjectId(id)) {
-        return res.status(400).json({ message: "Invalid pizza ID" });
+        return res.status(400).json({
+          message: "Invalid pizza ID",
+        });
       }
 
       const result = await menuCollection.deleteOne({
@@ -1413,7 +1522,9 @@ app.delete(
       });
 
       if (!result.deletedCount) {
-        return res.status(404).json({ message: "Pizza not found" });
+        return res.status(404).json({
+          message: "Pizza not found",
+        });
       }
 
       res.json({
@@ -1421,12 +1532,15 @@ app.delete(
         message: "Pizza deleted successfully",
       });
     } catch (error) {
-      res.status(500).json({ message: "Failed to delete pizza" });
+      console.error("Admin delete menu error:", error);
+      res.status(500).json({
+        message: "Failed to delete pizza",
+      });
     }
   },
 );
 
-// Admin: View all orders
+// 9. Admin: View all orders (read only)
 app.get(
   "/api/admin/orders",
   verifyToken,
@@ -1440,25 +1554,73 @@ app.get(
 
       res.json(result);
     } catch (error) {
-      res.status(500).json({ message: "Failed to load orders" });
+      console.error("Admin orders error:", error);
+      res.status(500).json({
+        message: "Failed to load orders",
+      });
     }
   },
 );
 
-// Admin: View transactions (read only)
+// 10. Admin: View transactions (read only)
 app.get(
   "/api/admin/transactions",
   verifyToken,
   verifyRole("admin"),
   async (req, res) => {
     try {
-      const result = await transactionsCollection
+      const transactions = await transactionsCollection
         .find({})
         .sort({ createdAt: -1 })
         .toArray();
 
+      // Get vendor information for transactions
+      const vendors = await usersCollection
+        .find(
+          { role: "vendor" },
+          {
+            projection: {
+              name: 1,
+              email: 1,
+              businessName: 1,
+            },
+          },
+        )
+        .toArray();
+
+      const vendorMap = new Map();
+
+      vendors.forEach((vendor) => {
+        vendorMap.set(String(vendor._id), vendor);
+        if (vendor.id) {
+          vendorMap.set(String(vendor.id), vendor);
+        }
+      });
+
+      const result = transactions.map((transaction) => {
+        const vendor = vendorMap.get(String(transaction.vendorId));
+
+        return {
+          ...transaction,
+          vendorName:
+            transaction.vendorName ||
+            vendor?.businessName ||
+            vendor?.name ||
+            "Unknown Vendor",
+          vendorEmail: transaction.vendorEmail || vendor?.email || "—",
+          type:
+            transaction.plan ||
+            transaction.type ||
+            transaction.subscriptionPlan ||
+            "Premium Subscription",
+          stripeInvoiceId:
+            transaction.stripeInvoiceId || transaction.stripeSessionId || "",
+        };
+      });
+
       res.json(result);
     } catch (error) {
+      console.error("Admin transactions error:", error);
       res.status(500).json({
         message: "Failed to load transactions",
       });
