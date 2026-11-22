@@ -520,6 +520,7 @@ app.get("/api/menu-items/:id", async (req, res) => {
   }
 });
 
+
 // Add pizza
 app.post(
   "/api/menu-items",
@@ -536,6 +537,7 @@ app.post(
         location,
       } = req.body;
 
+      // Validate required fields
       const validFields = [
         name,
         description,
@@ -547,6 +549,7 @@ app.post(
           typeof value === "string" && value.trim(),
       );
 
+      // Validate image URL
       let validImage = false;
 
       if (typeof image === "string") {
@@ -568,22 +571,27 @@ app.post(
         });
       }
 
+      // Get vendor subscription plan
       const plan = await getVendorPlan(req.user.email);
 
-      // Count only approved and active pizzas
-      const activeItems = await menuCollection.countDocuments({
+      // Count pending pizzas and approved active pizzas
+      const totalListings = await menuCollection.countDocuments({
         vendorId: req.user.id,
-        status: "approved",
-        isActive: true,
+        $or: [
+          { status: "pending" },
+          { status: "approved", isActive: true },
+        ],
       });
 
-      if (plan === "free" && activeItems >= 3) {
+      // Free plan allows maximum 3 listings
+      if (plan === "free" && totalListings >= 3) {
         return res.status(403).json({
           message:
-            "Free plan allows only 3 active pizzas. Upgrade to Premium for unlimited listings.",
+            "Free plan allows only 3 pizza listings. Upgrade to Premium for unlimited listings.",
         });
       }
 
+      // Create new pizza
       const newItem = {
         name: name.trim(),
         description: description.trim(),
@@ -617,6 +625,7 @@ app.post(
     }
   },
 );
+
 
 // Edit own pizza
 app.patch(
