@@ -1,4 +1,3 @@
-
 import express from "express";
 import { MongoClient, ObjectId } from "mongodb";
 import "dotenv/config";
@@ -33,9 +32,7 @@ app.use(
 );
 
 // Better Auth JWT
-const JWKS = createRemoteJWKSet(
-  new URL(`${CLIENT_URL}/api/auth/jwks`),
-);
+const JWKS = createRemoteJWKSet(new URL(`${CLIENT_URL}/api/auth/jwks`));
 
 // --------------------------------------------------
 // STRIPE WEBHOOK
@@ -51,9 +48,9 @@ app.post(
     }
 
     const signature = req.headers["stripe-signature"];
-
     let event;
 
+    // Verify Stripe webhook signature
     try {
       event = stripe.webhooks.constructEvent(
         req.body,
@@ -61,105 +58,115 @@ app.post(
         process.env.STRIPE_WEBHOOK_SECRET,
       );
     } catch (error) {
-      console.error(
-        "Stripe webhook verification failed:",
-        error.message,
-      );
+      console.error("Stripe webhook verification failed:", error.message);
 
       return res.status(400).send("Invalid webhook signature");
     }
 
     try {
-      if (event.type === "checkout.session.completed") {
+      // Handle successful one-time Premium payment
+      if (
+        event.type === "checkout.session.completed" ||
+        event.type === "checkout.session.async_payment_succeeded"
+      ) {
         const session = event.data.object;
 
-        if (
-          session.mode === "subscription" &&
-          session.metadata?.vendorEmail
-        ) {
-          const subscriptionId = session.subscription;
+        if (session.mode === "payment" && session.payment_status === "paid") {
+          const vendorEmail = session.metadata?.vendorEmail;
 
-          await usersCollection.updateOne(
-            { email: session.metadata.vendorEmail },
-            {
-              $set: {
-                subscriptionPlan: "premium",
-                subscriptionStatus: "active",
-                stripeSubscriptionId: subscriptionId,
-                subscriptionUpdatedAt: new Date(),
-              },
-            },
-          );
-        }
-      }
+          if (!vendorEmail) {
+            console.error("Vendor email missing from Checkout Session");
+            return res.status(400).send("Vendor information missing");
+          }
 
-      if (
-        event.type === "customer.subscription.updated" ||
-        event.type === "customer.subscription.deleted"
-      ) {
-        const subscription = event.data.object;
+          const user = await usersCollection.findOne({
+            email: vendorEmail,
+          });
 
-        const vendorEmail = subscription.metadata?.vendorEmail;
+          if (!user) {
+            console.error("Vendor not found:", vendorEmail);
+            return res.status(404).send("Vendor not found");
+          }
 
-        if (vendorEmail) {
-          const isActive =
-            subscription.status === "active" ||
-            subscription.status === "trialing";
-
+          // Activate Lifetime Premium
           await usersCollection.updateOne(
             { email: vendorEmail },
             {
               $set: {
-                subscriptionPlan: isActive ? "premium" : "free",
-                subscriptionStatus: subscription.status,
+                subscriptionPlan: "premium",
+                subscriptionStatus: "active",
                 subscriptionUpdatedAt: new Date(),
+                stripePaymentIntentId:
+                  typeof session.payment_intent === "string"
+                    ? session.payment_intent
+                    : session.payment_intent?.id || null,
+              },
+              $unset: {
+                stripeCheckoutSessionId: "",
+                stripeCheckoutSessionExpiresAt: "",
+                subscriptionExpiresAt: "",
+                stripeSubscriptionId: "",
+              },
+            },
+          );
+
+          // Save successful payment in transactions collection
+          const existingTransaction = await transactionsCollection.findOne({
+            stripeEventId: event.id,
+          });
+
+          if (!existingTransaction) {
+            await transactionsCollection.insertOne({
+              stripeEventId: event.id,
+              vendorEmail: vendorEmail,
+              vendorName: user.name || "",
+              vendorId: user.id || String(user._id),
+              amount: (session.amount_total || 0) / 100,
+              currency: session.currency || "usd",
+              type: "subscription",
+              status: "paid",
+              stripePaymentIntentId:
+                typeof session.payment_intent === "string"
+                  ? session.payment_intent
+                  : session.payment_intent?.id || null,
+              stripeCheckoutSessionId: session.id,
+              createdAt: new Date(),
+            });
+          }
+
+          console.log(`Lifetime Premium activated for ${vendorEmail}`);
+        }
+      }
+
+      // Clear abandoned Checkout Sessions
+      if (event.type === "checkout.session.expired") {
+        const session = event.data.object;
+
+        if (session.metadata?.vendorEmail) {
+          await usersCollection.updateOne(
+            {
+              email: session.metadata.vendorEmail,
+              stripeCheckoutSessionId: session.id,
+            },
+            {
+              $unset: {
+                stripeCheckoutSessionId: "",
+                stripeCheckoutSessionExpiresAt: "",
               },
             },
           );
         }
       }
 
-      if (event.type === "invoice.paid") {
-        const invoice = event.data.object;
+      // Old recurring subscription events are intentionally ignored.
+      // Lifetime Premium is activated only through a successful
+      // one-time Checkout payment.
 
-        const subscriptionId =
-          typeof invoice.subscription === "string"
-            ? invoice.subscription
-            : invoice.subscription?.id;
-
-        if (subscriptionId) {
-          const user = await usersCollection.findOne({
-            stripeSubscriptionId: subscriptionId,
-          });
-
-          if (user) {
-            const alreadyExists =
-              await transactionsCollection.findOne({
-                stripeEventId: event.id,
-              });
-
-            if (!alreadyExists) {
-              await transactionsCollection.insertOne({
-                stripeEventId: event.id,
-                vendorEmail: user.email,
-                vendorName: user.name || "",
-                amount: invoice.amount_paid / 100,
-                currency: invoice.currency,
-                type: "subscription",
-                status: "paid",
-                stripeInvoiceId: invoice.id,
-                createdAt: new Date(),
-              });
-            }
-          }
-        }
-      }
-
-      res.json({ received: true });
+      return res.json({ received: true });
     } catch (error) {
       console.error("Webhook processing error:", error);
 
-      res.status(500).send("Webhook processing failed");
+      return res.status(500).send("Webhook processing failed");
     }
   },
 );
@@ -203,10 +210,7 @@ const verifyToken = async (req, res, next) => {
       });
     }
 
-    if (
-      dbUser.isBlocked === true ||
-      dbUser.status === "blocked"
-    ) {
+    if (dbUser.isBlocked === true || dbUser.status === "blocked") {
       return res.status(403).json({
         message: "Your account has been blocked",
       });
@@ -221,10 +225,7 @@ const verifyToken = async (req, res, next) => {
 
     next();
   } catch (error) {
-    console.error(
-      "Token verification failed:",
-      error.message,
-    );
+    console.error("Token verification failed:", error.message);
 
     return res.status(401).json({
       message: "Invalid or expired token",
@@ -248,8 +249,7 @@ const verifyRole = (...roles) => {
 // HELPERS
 // --------------------------------------------------
 
-const escapeRegex = (value) =>
-  value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
+const escapeRegex = (value) => value.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 
 const validObjectId = (id) => ObjectId.isValid(id);
 
@@ -263,17 +263,99 @@ const getUserIdFilter = (id) => {
   return { $or: conditions };
 };
 
+// Check vendor Premium plan and expiry.
 const getVendorPlan = async (email) => {
   const user = await usersCollection.findOne({ email });
 
-  if (
-    user?.subscriptionPlan === "premium" &&
-    user?.subscriptionStatus === "active"
-  ) {
-    return "premium";
+  if (!user || user.subscriptionPlan !== "premium") {
+    return "free";
   }
 
-  return "free";
+  const activeStatuses = ["active", "trialing"];
+
+  if (!activeStatuses.includes(user.subscriptionStatus)) {
+    return "free";
+  }
+
+  // If an expiry date is already stored, use it.
+  if (user.subscriptionExpiresAt) {
+    const expiresAt = new Date(user.subscriptionExpiresAt);
+
+    if (
+      !Number.isNaN(expiresAt.getTime()) &&
+      expiresAt.getTime() > Date.now()
+    ) {
+      return "premium";
+    }
+
+    await usersCollection.updateOne(
+      { email },
+      {
+        $set: {
+          subscriptionPlan: "free",
+          subscriptionStatus: "expired",
+          subscriptionUpdatedAt: new Date(),
+        },
+      },
+    );
+
+    return "free";
+  }
+
+  // Backfill expiry for older Premium accounts.
+  if (stripe && user.stripeSubscriptionId) {
+    try {
+      const subscription = await stripe.subscriptions.retrieve(
+        user.stripeSubscriptionId,
+      );
+
+      const isActive = activeStatuses.includes(subscription.status);
+
+      const expiresAt = subscription.current_period_end
+        ? new Date(subscription.current_period_end * 1000)
+        : null;
+
+      if (isActive && expiresAt && expiresAt.getTime() > Date.now()) {
+        await usersCollection.updateOne(
+          { email },
+          {
+            $set: {
+              subscriptionPlan: "premium",
+              subscriptionStatus: subscription.status,
+              subscriptionExpiresAt: expiresAt,
+              subscriptionUpdatedAt: new Date(),
+            },
+          },
+        );
+
+        return "premium";
+      }
+
+      await usersCollection.updateOne(
+        { email },
+        {
+          $set: {
+            subscriptionPlan: "free",
+            subscriptionStatus: subscription.status || "expired",
+            subscriptionUpdatedAt: new Date(),
+          },
+        },
+      );
+
+      return "free";
+    } catch (error) {
+      console.error(
+        "Could not verify existing Stripe subscription:",
+        error.message,
+      );
+
+      // Do not remove an existing Premium account if Stripe is temporarily unavailable.
+      return "premium";
+    }
+  }
+
+  // Keep a legacy active account Premium until its expiry can be verified.
+  return "premium";
 };
 
 // --------------------------------------------------
@@ -314,29 +396,19 @@ app.get(
   },
 );
 
-app.get(
-  "/api/vendor-test",
-  verifyToken,
-  verifyRole("vendor"),
-  (req, res) => {
-    res.json({
-      message: "Vendor access successful",
-      user: req.user,
-    });
-  },
-);
+app.get("/api/vendor-test", verifyToken, verifyRole("vendor"), (req, res) => {
+  res.json({
+    message: "Vendor access successful",
+    user: req.user,
+  });
+});
 
-app.get(
-  "/api/admin-test",
-  verifyToken,
-  verifyRole("admin"),
-  (req, res) => {
-    res.json({
-      message: "Admin access successful",
-      user: req.user,
-    });
-  },
-);
+app.get("/api/admin-test", verifyToken, verifyRole("admin"), (req, res) => {
+  res.json({
+    message: "Admin access successful",
+    user: req.user,
+  });
+});
 
 // --------------------------------------------------
 // PUBLIC MENU API
@@ -378,10 +450,7 @@ app.get("/api/menu-items", async (req, res) => {
       sortOption = { price: -1 };
     }
 
-    const result = await menuCollection
-      .find(filter)
-      .sort(sortOption)
-      .toArray();
+    const result = await menuCollection.find(filter).sort(sortOption).toArray();
 
     res.json(result);
   } catch (error) {
@@ -520,7 +589,6 @@ app.get("/api/menu-items/:id", async (req, res) => {
   }
 });
 
-
 // Add pizza
 app.post(
   "/api/menu-items",
@@ -528,25 +596,11 @@ app.post(
   verifyRole("vendor"),
   async (req, res) => {
     try {
-      const {
-        name,
-        description,
-        price,
-        image,
-        category,
-        location,
-      } = req.body;
+      const { name, description, price, image, category, location } = req.body;
 
       // Validate required fields
-      const validFields = [
-        name,
-        description,
-        image,
-        category,
-        location,
-      ].every(
-        (value) =>
-          typeof value === "string" && value.trim(),
+      const validFields = [name, description, image, category, location].every(
+        (value) => typeof value === "string" && value.trim(),
       );
 
       // Validate image URL
@@ -577,10 +631,7 @@ app.post(
       // Count pending pizzas and approved active pizzas
       const totalListings = await menuCollection.countDocuments({
         vendorId: req.user.id,
-        $or: [
-          { status: "pending" },
-          { status: "approved", isActive: true },
-        ],
+        $or: [{ status: "pending" }, { status: "approved", isActive: true }],
       });
 
       // Free plan allows maximum 3 listings
@@ -626,7 +677,6 @@ app.post(
   },
 );
 
-
 // Edit own pizza
 app.patch(
   "/api/menu-items/:id",
@@ -642,24 +692,10 @@ app.patch(
         });
       }
 
-      const {
-        name,
-        description,
-        price,
-        image,
-        category,
-        location,
-      } = req.body;
+      const { name, description, price, image, category, location } = req.body;
 
-      const validFields = [
-        name,
-        description,
-        image,
-        category,
-        location,
-      ].every(
-        (value) =>
-          typeof value === "string" && value.trim(),
+      const validFields = [name, description, image, category, location].every(
+        (value) => typeof value === "string" && value.trim(),
       );
 
       let validImage = false;
@@ -772,10 +808,7 @@ app.patch(
       const { id } = req.params;
       const { isActive } = req.body;
 
-      if (
-        !validObjectId(id) ||
-        typeof isActive !== "boolean"
-      ) {
+      if (!validObjectId(id) || typeof isActive !== "boolean") {
         return res.status(400).json({
           message: "Invalid request",
         });
@@ -830,10 +863,7 @@ app.patch(
         message: `Pizza ${isActive ? "activated" : "deactivated"} successfully`,
       });
     } catch (error) {
-      console.error(
-        "Update pizza availability error:",
-        error,
-      );
+      console.error("Update pizza availability error:", error);
 
       res.status(500).json({
         message: "Failed to update pizza availability",
@@ -884,13 +914,7 @@ app.post(
         dateParts.every(Number.isInteger);
 
       const date = isValidDate
-        ? new Date(
-            Date.UTC(
-              dateParts[0],
-              dateParts[1] - 1,
-              dateParts[2],
-            ),
-          )
+        ? new Date(Date.UTC(dateParts[0], dateParts[1] - 1, dateParts[2]))
         : new Date(NaN);
 
       const validCalendarDate =
@@ -932,9 +956,7 @@ app.post(
       }
 
       // Check duplicate order for the same UTC calendar date
-      const startOfDay = new Date(
-        `${deliveryDate}T00:00:00.000Z`,
-      );
+      const startOfDay = new Date(`${deliveryDate}T00:00:00.000Z`);
 
       const endOfDay = new Date(startOfDay);
       endOfDay.setUTCDate(endOfDay.getUTCDate() + 1);
@@ -974,18 +996,14 @@ app.post(
         vendorEmail: "",
         deliveryDate: date,
         deliveryAddress: deliveryAddress.trim(),
-        message:
-          typeof message === "string" ? message.trim() : "",
+        message: typeof message === "string" ? message.trim() : "",
         status: "pending",
         createdAt: new Date(),
         updatedAt: new Date(),
       };
 
       // Find vendor using string ID or ObjectId
-      const vendorConditions = [
-        { _id: item.vendorId },
-        { id: item.vendorId },
-      ];
+      const vendorConditions = [{ _id: item.vendorId }, { id: item.vendorId }];
 
       if (validObjectId(item.vendorId)) {
         vendorConditions.push({
@@ -1191,19 +1209,13 @@ app.patch(
         });
       }
 
-      if (
-        order.status === "accepted" &&
-        status !== "delivered"
-      ) {
+      if (order.status === "accepted" && status !== "delivered") {
         return res.status(400).json({
           message: "Accepted orders can only be marked as delivered",
         });
       }
 
-      if (
-        order.status !== "pending" &&
-        order.status !== "accepted"
-      ) {
+      if (order.status !== "pending" && order.status !== "accepted") {
         return res.status(400).json({
           message: "This order can no longer be updated",
         });
@@ -1232,7 +1244,7 @@ app.patch(
 // VENDOR SUBSCRIPTION API
 // --------------------------------------------------
 
-// Get subscription details
+// Get current subscription details
 app.get(
   "/api/subscription/me",
   verifyToken,
@@ -1243,15 +1255,25 @@ app.get(
         email: req.user.email,
       });
 
-      const plan = await getVendorPlan(req.user.email);
+      if (!user) {
+        return res.status(404).json({
+          message: "Vendor account not found",
+        });
+      }
+
+      // Lifetime Premium status
+      const isPremium =
+        user.subscriptionPlan === "premium" &&
+        user.subscriptionStatus === "active";
 
       res.json({
-        plan,
-        status: user?.subscriptionStatus || "inactive",
-        subscriptionUpdatedAt:
-          user?.subscriptionUpdatedAt || null,
+        plan: isPremium ? "premium" : "free",
+        status: isPremium ? "active" : "inactive",
+        subscriptionUpdatedAt: user.subscriptionUpdatedAt || null,
       });
     } catch (error) {
+      console.error("Get subscription error:", error);
+
       res.status(500).json({
         message: "Failed to load subscription",
       });
@@ -1259,7 +1281,7 @@ app.get(
   },
 );
 
-// Create Stripe Checkout Session
+// Create One-Time Stripe Checkout Session
 app.post(
   "/api/subscription/checkout",
   verifyToken,
@@ -1274,43 +1296,97 @@ app.post(
 
       if (!process.env.STRIPE_PREMIUM_PRICE_ID) {
         return res.status(503).json({
-          message: "Premium subscription price is not configured",
+          message: "Premium price is not configured",
         });
       }
 
-      const plan = await getVendorPlan(req.user.email);
+      const user = await usersCollection.findOne({
+        email: req.user.email,
+      });
 
-      if (plan === "premium") {
-        return res.status(400).json({
-          message:
-            "You already have an active Premium subscription",
+      if (!user) {
+        return res.status(404).json({
+          message: "Vendor account not found",
         });
       }
 
+      // Already purchased Premium? Block another payment.
+      if (
+        user.subscriptionPlan === "premium" &&
+        user.subscriptionStatus === "active"
+      ) {
+        return res.status(409).json({
+          message: "You already have Premium access!",
+        });
+      }
+
+      // Reuse an existing unpaid Checkout Session.
+      if (user.stripeCheckoutSessionId) {
+        try {
+          const oldSession = await stripe.checkout.sessions.retrieve(
+            user.stripeCheckoutSessionId,
+          );
+
+          if (oldSession.status === "open" && oldSession.url) {
+            return res.json({
+              success: true,
+              url: oldSession.url,
+            });
+          }
+        } catch (error) {
+          console.log("Previous Checkout Session not found.");
+        }
+
+        await usersCollection.updateOne(
+          { email: req.user.email },
+          {
+            $unset: {
+              stripeCheckoutSessionId: "",
+            },
+          },
+        );
+      }
+
+      // Create one-time payment
       const session = await stripe.checkout.sessions.create({
-        mode: "subscription",
+        mode: "payment",
+
         customer_email: req.user.email,
+
         line_items: [
           {
             price: process.env.STRIPE_PREMIUM_PRICE_ID,
             quantity: 1,
           },
         ],
+
         metadata: {
           vendorEmail: req.user.email,
           vendorId: req.user.id,
         },
-        subscription_data: {
+
+        payment_intent_data: {
           metadata: {
             vendorEmail: req.user.email,
             vendorId: req.user.id,
           },
         },
+
         success_url: `${CLIENT_URL}/dashboard/vendor/subscription/success?session_id={CHECKOUT_SESSION_ID}`,
+
         cancel_url: `${CLIENT_URL}/dashboard/vendor/subscription/cancel`,
       });
 
-      res.json({
+      await usersCollection.updateOne(
+        { email: req.user.email },
+        {
+          $set: {
+            stripeCheckoutSessionId: session.id,
+          },
+        },
+      );
+
+      return res.json({
         success: true,
         url: session.url,
       });
@@ -1318,7 +1394,7 @@ app.post(
       console.error("Stripe checkout error:", error);
 
       res.status(500).json({
-        message: "Unable to start subscription checkout",
+        message: "Unable to start payment",
       });
     }
   },
@@ -1352,10 +1428,7 @@ app.get(
         usersCollection.countDocuments({ role: "customer" }),
         usersCollection.countDocuments({ role: "vendor" }),
         usersCollection.countDocuments({
-          $or: [
-            { isBlocked: true },
-            { status: "blocked" },
-          ],
+          $or: [{ isBlocked: true }, { status: "blocked" }],
         }),
         menuCollection.countDocuments({}),
         menuCollection.countDocuments({ status: "pending" }),
@@ -1415,19 +1488,13 @@ app.get(
         };
 
         conditions.push({
-          $or: [
-            { name: regex },
-            { email: regex },
-          ],
+          $or: [{ name: regex }, { email: regex }],
         });
       }
 
       if (status === "blocked") {
         conditions.push({
-          $or: [
-            { isBlocked: true },
-            { status: "blocked" },
-          ],
+          $or: [{ isBlocked: true }, { status: "blocked" }],
         });
       }
 
@@ -1702,8 +1769,7 @@ app.patch(
 
       if (item.status !== "approved") {
         return res.status(400).json({
-          message:
-            "Only approved pizzas can be activated or deactivated",
+          message: "Only approved pizzas can be activated or deactivated",
         });
       }
 
@@ -1807,16 +1873,18 @@ app.get(
         .sort({ createdAt: -1 })
         .toArray();
 
-      const vendors = await usersCollection.find(
-        { role: "vendor" },
-        {
-          projection: {
-            name: 1,
-            email: 1,
-            businessName: 1,
+      const vendors = await usersCollection
+        .find(
+          { role: "vendor" },
+          {
+            projection: {
+              name: 1,
+              email: 1,
+              businessName: 1,
+            },
           },
-        },
-      ).toArray();
+        )
+        .toArray();
 
       const vendorMap = new Map();
 
@@ -1829,9 +1897,7 @@ app.get(
       });
 
       const result = transactions.map((transaction) => {
-        const vendor = vendorMap.get(
-          String(transaction.vendorId),
-        );
+        const vendor = vendorMap.get(String(transaction.vendorId));
 
         return {
           ...transaction,
@@ -1840,19 +1906,14 @@ app.get(
             vendor?.businessName ||
             vendor?.name ||
             "Unknown Vendor",
-          vendorEmail:
-            transaction.vendorEmail ||
-            vendor?.email ||
-            "—",
+          vendorEmail: transaction.vendorEmail || vendor?.email || "—",
           type:
             transaction.plan ||
             transaction.type ||
             transaction.subscriptionPlan ||
             "Premium Subscription",
           stripeInvoiceId:
-            transaction.stripeInvoiceId ||
-            transaction.stripeSessionId ||
-            "",
+            transaction.stripeInvoiceId || transaction.stripeSessionId || "",
         };
       });
 
